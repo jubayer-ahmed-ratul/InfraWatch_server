@@ -3,6 +3,7 @@ const cors = require('cors');
 const app = express();
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
+const { ObjectId } = require('mongodb');
 
 const port = process.env.PORT || 3000;
 
@@ -44,6 +45,29 @@ app.get("/issues", async (req, res) => {
     const issues = await issueCollection.find().toArray();
     res.status(200).send(issues);
 
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+/////////////////////////////////
+///////////GET ISSUE BY ID//////
+/////////////////////////////////
+app.get("/issues/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: "Invalid ID format" });
+    }
+
+    const issue = await issueCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!issue) {
+      return res.status(404).send({ error: "Issue not found" });
+    }
+
+    res.status(200).send(issue);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
