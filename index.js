@@ -33,6 +33,23 @@ connectDB();
 
 
 /////////////////////////////////
+///////////GET  ISSUES////////
+/////////////////////////////////
+app.get("/issues", async (req, res) => {
+  try {
+    if (!issueCollection) {
+      return res.status(500).send({ error: "Database not connected yet" });
+    }
+
+    const issues = await issueCollection.find().toArray();
+    res.status(200).send(issues);
+
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+/////////////////////////////////
 ///////////POST ISSUE////////////
 /////////////////////////////////
 app.post("/issues", async (req, res) => {
