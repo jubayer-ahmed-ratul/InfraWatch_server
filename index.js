@@ -1,44 +1,62 @@
-const express = require('express')
-const cors =require('cors')
-const app = express()
-require('dotenv').config()
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const express = require('express');
+const cors = require('cors');
+const app = express();
+require('dotenv').config();
+const { MongoClient } = require('mongodb');
 
+const port = process.env.PORT || 3000;
 
-
-const port = process.env.PORT || 3000
-
-//middleware//
+// middleware
 app.use(express.json());
-app.use(cors())
+app.use(cors());
 
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.bsfywqv.mongodb.net/?appName=Cluster0`;
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-});
-async function run() {
+// MongoDB connect
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.bsfywqv.mongodb.net/?retryWrites=true&w=majority`;
+
+const client = new MongoClient(uri);
+
+let issueCollection;
+
+async function connectDB() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
-  } finally {
-    // Ensures that the client will close when you finish/error
-    await client.close();
+    console.log("MongoDB Connected!");
+
+    const db = client.db("infraWatch_db");
+    issueCollection = db.collection("issues");
+  } catch (err) {
+    console.log("DB Error:", err);
   }
 }
-run().catch(console.dir);
 
-app.get('/', (req, res) => {
-  res.send('Hello World!')
-})
+connectDB();
+
+
+/////////////////////////////////
+///////////POST ISSUE////////////
+/////////////////////////////////
+app.post("/issues", async (req, res) => {
+  try {
+    const issue = req.body;
+
+    if (!issue) {
+      return res.status(400).send({ error: "No issue data provided" });
+    }
+
+    const result = await issueCollection.insertOne(issue);
+    res.status(201).send(result);
+
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
+
+app.get("/", (req, res) => {
+  res.send("Backend running! POST /issues is available.");
+});
 
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`)
-})
+  console.log(`Server running on port ${port}`);
+});
