@@ -93,6 +93,22 @@ app.post("/issues", async (req, res) => {
 });
 
 /////////////////////////////////
+///////////GET USER////////////
+/////////////////////////////////
+
+app.get("/users", async (req, res) => {
+  try {
+    const db = client.db("infraWatch_db");
+    const usersCollection = db.collection("users");
+
+    const users = await usersCollection.find({}).toArray(); // fetch all users
+    res.status(200).send(users);
+
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+/////////////////////////////////
 ///////////POST USER////////////
 /////////////////////////////////
 app.post("/users", async (req, res) => {
@@ -113,6 +129,8 @@ app.post("/users", async (req, res) => {
     res.status(500).send({ error: err.message });
   }
 });
+
+
 
 
 
