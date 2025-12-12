@@ -42,13 +42,40 @@ app.get("/issues", async (req, res) => {
       return res.status(500).send({ error: "Database not connected yet" });
     }
 
-    const issues = await issueCollection.find().toArray();
-    res.status(200).send(issues);
+  
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+      category,
+      status,
+      priority,
+    } = req.query;
 
+   
+    const query = {};
+
+    if (search) {
+      query.title = { $regex: search, $options: "i" }; 
+    }
+    if (category) query.category = category;
+    if (status) query.status = status;
+    if (priority) query.priority = priority;
+
+   
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const issuesCursor = issueCollection.find(query).skip(skip).limit(parseInt(limit));
+    const issues = await issuesCursor.toArray();
+
+  
+    const totalCount = await issueCollection.countDocuments(query);
+
+    res.status(200).json({ issues, totalCount });
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
 });
+
 /////////////////////////////////
 ///////////DELETE ALL ISSUES/////
 /////////////////////////////////
