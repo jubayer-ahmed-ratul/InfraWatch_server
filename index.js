@@ -92,6 +92,29 @@ app.post("/issues", async (req, res) => {
   }
 });
 
+/////////////////////////////////
+///////////POST USER////////////
+/////////////////////////////////
+app.post("/users", async (req, res) => {
+  try {
+    const user = req.body;
+
+    if (!user || !user.email) {
+      return res.status(400).send({ error: "Invalid user data" });
+    }
+
+    const db = client.db("infraWatch_db");
+    const usersCollection = db.collection("users");
+
+    const result = await usersCollection.insertOne(user);
+    res.status(201).send(result);
+
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
 
 
 app.get("/", (req, res) => {
