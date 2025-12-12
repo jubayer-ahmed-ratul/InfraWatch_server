@@ -49,6 +49,50 @@ app.get("/issues", async (req, res) => {
     res.status(500).send({ error: err.message });
   }
 });
+/////////////////////////////////
+///////////DELETE ALL ISSUES/////
+/////////////////////////////////
+app.delete("/issues", async (req, res) => {
+  try {
+    if (!issueCollection) {
+      return res.status(500).send({ error: "Database not connected yet" });
+    }
+
+    const result = await issueCollection.deleteMany({}); 
+
+    res.status(200).send({ message: "All issues deleted!", deletedCount: result.deletedCount });
+
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
+////////////////////////////////////////////
+///////////GET 6 PENDING ISSUES////////////
+////////////////////////////////////////////
+app.get("/issues/resolved", async (req, res) => {
+  try {
+    if (!issueCollection) {
+      return res.status(500).send({ error: "Database not connected yet" });
+    }
+
+    const resolvedIssues = await issueCollection
+      .find({ status: { $regex: /^resolved$/i } }) 
+      .limit(6)
+      .toArray();
+
+    res.status(200).send(resolvedIssues);
+
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
+
+
+
 
 /////////////////////////////////
 ///////////GET ISSUE BY ID//////
@@ -101,7 +145,7 @@ app.get("/users", async (req, res) => {
     const db = client.db("infraWatch_db");
     const usersCollection = db.collection("users");
 
-    const users = await usersCollection.find({}).toArray(); // fetch all users
+    const users = await usersCollection.find({}).toArray(); 
     res.status(200).send(users);
 
   } catch (err) {
