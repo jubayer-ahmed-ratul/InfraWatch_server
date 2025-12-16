@@ -53,33 +53,41 @@ app.post("/users", async (req, res) => {
       return res.status(400).json({ error: "Name and email are required" });
     }
 
-  
-    const query = uid ? { uid } : { email };
+ 
+    let query;
+    if (uid) {
+      query = { uid }; 
+    } else {
+      query = { email }; 
+    }
+
     let user = await usersCollection.findOne(query);
 
     if (user) {
-      // User already exists
-      return res.status(200).json(user);
+      return res.status(200).json(user); 
     }
 
-    // Create new user
-    user = {
+    
+    const newUser = {
       name,
       email,
-      uid: uid || null, 
-      photo: photo || null,
+      uid: uid || null,         
+      photo: photo || null,      
       password: password || null, 
       premium: false,
       blocked: false,
       createdAt: new Date(),
     };
 
-    const result = await usersCollection.insertOne(user);
-    res.status(201).json(result.ops[0] || user);
+    const result = await usersCollection.insertOne(newUser);
+    const insertedUser = await usersCollection.findOne({ _id: result.insertedId });
+
+    res.status(201).json(insertedUser);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // Get single user by ID
 app.get("/users/:id", async (req, res) => {
