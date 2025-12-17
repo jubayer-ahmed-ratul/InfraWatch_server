@@ -6,6 +6,9 @@ const { MongoClient, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 3000;
 
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
+
+
 // Middleware
 app.use(express.json());
 app.use(cors());
@@ -46,47 +49,59 @@ app.get("/users", async (req, res) => {
 
 
 app.post("/users", async (req, res) => {
-  try {
-    const { email, name, password, uid, photo } = req.body;
+  const { email, name, password, uid, photo } = req.body;
 
-    if (!email || !name) {
-      return res.status(400).json({ error: "Name and email are required" });
-    }
+  if (!email || !name) return res.status(400).json({ error: "Name and email required" });
 
+
+  let query = { $or: [{ uid }, { email }] };
+
+  let user = await usersCollection.findOne(query);
+
+  if (user) {
  
-    let query;
-    if (uid) {
-      query = { uid }; 
-    } else {
-      query = { email }; 
+    const updates = {};
+    if (uid && !user.uid) updates.uid = uid;
+    if (photo && user.photo !== photo) updates.photo = photo;
+
+    if (Object.keys(updates).length > 0) {
+      await usersCollection.updateOne({ _id: user._id }, { $set: updates });
+      user = await usersCollection.findOne({ _id: user._id });
     }
 
-    let user = await usersCollection.findOne(query);
-
-    if (user) {
-      return res.status(200).json(user); 
-    }
-
-    
-    const newUser = {
-      name,
-      email,
-      uid: uid || null,         
-      photo: photo || null,      
-      password: password || null, 
-      premium: false,
-      blocked: false,
-      createdAt: new Date(),
-    };
-
-    const result = await usersCollection.insertOne(newUser);
-    const insertedUser = await usersCollection.findOne({ _id: result.insertedId });
-
-    res.status(201).json(insertedUser);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(200).json(user);
   }
+
+  const newUser = {
+    name,
+    email,
+    uid: uid || null,
+    photo: photo || null,
+    password: password || null,
+    premium: false,
+    blocked: false,
+    createdAt: new Date(),
+  };
+
+  const result = await usersCollection.insertOne(newUser);
+  const insertedUser = await usersCollection.findOne({ _id: result.insertedId });
+
+  res.status(201).json(insertedUser);
 });
+
+
+
+app.patch("/users/premium", async (req, res) => {
+  const { email } = req.body;
+
+  const result = await usersCollection.updateOne(
+    { email },
+    { $set: { premium: true } }
+  );
+
+  res.json({ success: true, modified: result.modifiedCount });
+});
+
 
 
 // Get single user by ID
@@ -109,6 +124,7 @@ app.get("/users/:id", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 //////////////////////////
 // ISSUE ROUTES
@@ -356,6 +372,105 @@ app.delete("/issues", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+//////////////////////////
+// Payment related api
+//////////////////////////
+app.post("/create-checkout-session", async (req, res) => {
+  try {
+    const { userEmail } = req.body; 
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [
+        {
+          price_data: {
+            currency: "bdt",
+            product_data: {
+              name: "Premium Membership",
+              description: "Unlimited issue reporting",
+            },
+            unit_amount: 1000 * 100, 
+          },
+          quantity: 1,
+        },
+      ],
+      mode: "payment",
+      success_url: `${process.env.SITE_DOMAIN}/payment-success?email=${userEmail}`, 
+      cancel_url: `${process.env.SITE_DOMAIN}/dashboard/profile`,
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a Stripe checkout session for boosting an issue
+app.post("/issues/:id/boost-session", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userEmail } = req.body;
+
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid issue ID" });
+
+    const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
+    if (!issue) return res.status(404).json({ error: "Issue not found" });
+    if (issue.boosted) return res.status(400).json({ error: "Issue already boosted" });
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [
+        {
+          price_data: {
+            currency: "bdt",
+            product_data: {
+              name: "Boost Issue",
+              description: `Boosting issue: ${issue.title}`,
+            },
+            unit_amount: 100 * 100, // 100 Taka in paisa
+          },
+          quantity: 1,
+        },
+      ],
+      mode: "payment",
+      success_url: `${process.env.SITE_DOMAIN}/boost-success?issueId=${id}&email=${userEmail}`,
+      cancel_url: `${process.env.SITE_DOMAIN}/issues/${id}`,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.patch("/issues/:id/boost", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid issue ID" });
+
+    const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
+    if (!issue) return res.status(404).json({ error: "Issue not found" });
+    if (issue.boosted) return res.status(400).json({ error: "Issue already boosted" });
+
+    const result = await issuesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { boosted: true, priority: "High" } }
+    );
+
+    res.json({ message: "Issue boosted successfully!", modifiedCount: result.modifiedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+
+
 
 //////////////////////////
 // SERVER INFO
