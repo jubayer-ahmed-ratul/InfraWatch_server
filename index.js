@@ -6,8 +6,10 @@ const { MongoClient, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 3000;
 
-const stripe = require('stripe')(process.env.STRIPE_SECRET);
 
+
+
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
 // Middleware
 app.use(express.json());
@@ -26,12 +28,240 @@ async function connectDB() {
     db = client.db("infraWatch_db");
     usersCollection = db.collection("users");
     issuesCollection = db.collection("issues");
+    staffCollection = db.collection("staff");
   } catch (err) {
     console.error("DB connection error:", err);
   }
 }
 
 connectDB();
+//////////////////////////
+// STAFF ROUTES
+//////////////////////////
+
+
+
+// Middleware to check if requester is admin
+const checkAdmin = async (req, res, next) => {
+  const { uid } = req.body; 
+  if (!uid) return res.status(401).json({ error: "Unauthorized" });
+
+  const user = await usersCollection.findOne({ uid });
+  if (!user || user.role !== "admin") return res.status(403).json({ error: "Admin only" });
+
+  next();
+};
+
+// Get all staff
+app.get("/staff", async (req, res) => {
+  try {
+    const staffList = await staffCollection.find({}).toArray();
+    res.status(200).json(staffList);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add new staff (admin only)
+app.post("/staff", checkAdmin, async (req, res) => {
+  try {
+    const { name, email, phone, password } = req.body;
+    if (!name || !email || !password)
+      return res.status(400).json({ error: "Name, email, and password are required" });
+
+    // Check if staff exists in MongoDB
+    const existing = await staffCollection.findOne({ email });
+    if (existing) return res.status(400).json({ error: "Staff already exists" });
+
+    // Check if user exists in Firebase
+    let firebaseUser;
+    try {
+      firebaseUser = await admin.auth().getUserByEmail(email);
+      return res.status(400).json({ error: "Staff already exists in Firebase" });
+    } catch (err) {
+      // User doesn't exist in Firebase, continue
+    }
+
+    // Create Firebase user
+    const userRecord = await admin.auth().createUser({
+      email,
+      password,
+      displayName: name,
+    });
+
+    // Store staff in MongoDB
+    const newStaff = {
+      uid: userRecord.uid,
+      name,
+      email,
+      phone: phone || null,
+      role: "staff",
+      createdAt: new Date(),
+    };
+
+    const result = await staffCollection.insertOne(newStaff);
+    const insertedStaff = await staffCollection.findOne({ _id: result.insertedId });
+
+    res.status(201).json(insertedStaff);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete staff by ID (admin only)
+app.delete("/staff/:id", checkAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid staff ID" });
+
+    const staff = await staffCollection.findOne({ _id: new ObjectId(id) });
+    if (!staff) return res.status(404).json({ error: "Staff not found" });
+
+    // Delete from Firebase Auth
+    if (staff.uid) {
+      await admin.auth().deleteUser(staff.uid);
+    }
+
+    // Delete from MongoDB
+    const result = await staffCollection.deleteOne({ _id: new ObjectId(id) });
+
+    res.json({ message: "Staff deleted successfully", deletedCount: result.deletedCount });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.patch("/staff/:id", checkAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid staff ID" });
+
+    const staff = await staffCollection.findOne({ _id: new ObjectId(id) });
+    if (!staff) return res.status(404).json({ error: "Staff not found" });
+
+ 
+    if (updates.name && staff.uid) {
+      await admin.auth().updateUser(staff.uid, { displayName: updates.name });
+    }
+
+    const result = await staffCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updates }
+    );
+
+    res.json({
+      message: "Staff updated successfully",
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+
+
+//////////////////////////
+// ASSIGN STAFF TO ISSUE
+//////////////////////////
+
+// Assign staff to an issue
+app.patch("/issues/:id/assign-staff", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { staffId } = req.body;
+
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid issue ID" });
+    if (!ObjectId.isValid(staffId))
+      return res.status(400).json({ error: "Invalid staff ID" });
+
+    const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
+    if (!issue) return res.status(404).json({ error: "Issue not found" });
+
+    const staff = await staffCollection.findOne({ _id: new ObjectId(staffId) });
+    if (!staff) return res.status(404).json({ error: "Staff not found" });
+
+    // Create timeline entry
+    const timelineEntry = {
+      status: "In Progress",
+      updatedBy: "Admin", 
+      message: `Assigned to staff: ${staff.name}`,
+      date: new Date(),
+    };
+
+    const result = await issuesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          assignedStaff: {
+            staffId: staff._id,
+            name: staff.name,
+            email: staff.email,
+            phone: staff.phone,
+          },
+          status: "In Progress",
+        },
+        $push: { timeline: timelineEntry },
+      }
+    );
+
+    res.json({
+      message: "Staff assigned successfully",
+      modifiedCount: result.modifiedCount,
+      assignedStaff: staff,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove staff assignment from an issue
+app.patch("/issues/:id/unassign-staff", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid issue ID" });
+
+    const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
+    if (!issue) return res.status(404).json({ error: "Issue not found" });
+
+    const timelineEntry = {
+      status: "Pending",
+      updatedBy: "Admin",
+      message: "Staff assignment removed",
+      date: new Date(),
+    };
+
+    const result = await issuesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          assignedStaff: null,
+          status: "Pending",
+        },
+        $push: { timeline: timelineEntry },
+      }
+    );
+
+    res.json({
+      message: "Staff unassigned successfully",
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 //////////////////////////
 // USER ROUTES
@@ -47,19 +277,17 @@ app.get("/users", async (req, res) => {
   }
 });
 
-
 app.post("/users", async (req, res) => {
   const { email, name, password, uid, photo } = req.body;
 
-  if (!email || !name) return res.status(400).json({ error: "Name and email required" });
-
+  if (!email || !name)
+    return res.status(400).json({ error: "Name and email required" });
 
   let query = { $or: [{ uid }, { email }] };
 
   let user = await usersCollection.findOne(query);
 
   if (user) {
- 
     const updates = {};
     if (uid && !user.uid) updates.uid = uid;
     if (photo && user.photo !== photo) updates.photo = photo;
@@ -84,12 +312,12 @@ app.post("/users", async (req, res) => {
   };
 
   const result = await usersCollection.insertOne(newUser);
-  const insertedUser = await usersCollection.findOne({ _id: result.insertedId });
+  const insertedUser = await usersCollection.findOne({
+    _id: result.insertedId,
+  });
 
   res.status(201).json(insertedUser);
 });
-
-
 
 app.patch("/users/premium", async (req, res) => {
   const { email } = req.body;
@@ -101,8 +329,6 @@ app.patch("/users/premium", async (req, res) => {
 
   res.json({ success: true, modified: result.modifiedCount });
 });
-
-
 
 // Get single user by ID
 app.get("/users/:id", async (req, res) => {
@@ -156,35 +382,47 @@ app.patch("/users/block", async (req, res) => {
       { $set: { blocked: !!blocked } }
     );
 
-    if (result.matchedCount === 0) return res.status(404).json({ error: "User not found" });
+    if (result.matchedCount === 0)
+      return res.status(404).json({ error: "User not found" });
 
-    res.json({ message: `User ${blocked ? "blocked" : "unblocked"} successfully`, modifiedCount: result.modifiedCount });
+    res.json({
+      message: `User ${blocked ? "blocked" : "unblocked"} successfully`,
+      modifiedCount: result.modifiedCount,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 app.delete("/users/:id", async (req, res) => {
   const { id } = req.params;
-  if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid user ID" });
+  if (!ObjectId.isValid(id))
+    return res.status(400).json({ error: "Invalid user ID" });
 
   const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
-  if (result.deletedCount === 0) return res.status(404).json({ error: "User not found" });
+  if (result.deletedCount === 0)
+    return res.status(404).json({ error: "User not found" });
 
-  res.json({ message: "User deleted successfully", deletedCount: result.deletedCount });
+  res.json({
+    message: "User deleted successfully",
+    deletedCount: result.deletedCount,
+  });
 });
-
-
-
-
 
 //////////////////////////
 // ISSUE ROUTES
 //////////////////////////
 
-// Get issues 
+// Get issues
 app.get("/issues", async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = "", category, status, priority } = req.query;
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+      category,
+      status,
+      priority,
+    } = req.query;
     const query = {};
 
     if (search) query.title = { $regex: search, $options: "i" };
@@ -193,7 +431,10 @@ app.get("/issues", async (req, res) => {
     if (priority) query.priority = priority;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const issuesCursor = issuesCollection.find(query).skip(skip).limit(parseInt(limit));
+    const issuesCursor = issuesCollection
+      .find(query)
+      .skip(skip)
+      .limit(parseInt(limit));
     const issues = await issuesCursor.toArray();
 
     const totalCount = await issuesCollection.countDocuments(query);
@@ -204,7 +445,7 @@ app.get("/issues", async (req, res) => {
   }
 });
 
-// Get resolved issues 
+// Get resolved issues
 app.get("/issues/resolved", async (req, res) => {
   try {
     const resolvedIssues = await issuesCollection
@@ -221,7 +462,8 @@ app.get("/issues/resolved", async (req, res) => {
 app.get("/issues/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid ID" });
 
     const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
     if (!issue) return res.status(404).json({ error: "Issue not found" });
@@ -244,7 +486,8 @@ app.get("/issues/user/:email", async (req, res) => {
 
     const query = { "createdBy.userEmail": email };
 
-    const issuesCursor = issuesCollection.find(query)
+    const issuesCursor = issuesCollection
+      .find(query)
       .skip(skip)
       .limit(parseInt(limit))
       .sort({ createdAt: -1 });
@@ -252,19 +495,16 @@ app.get("/issues/user/:email", async (req, res) => {
     const issues = await issuesCursor.toArray();
     const totalCount = await issuesCollection.countDocuments(query);
 
-    res.status(200).json({ 
-      issues, 
+    res.status(200).json({
+      issues,
       totalCount,
       currentPage: parseInt(page),
-      totalPages: Math.ceil(totalCount / parseInt(limit))
+      totalPages: Math.ceil(totalCount / parseInt(limit)),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-
-
 
 app.post("/issues", async (req, res) => {
   try {
@@ -294,19 +534,21 @@ app.post("/issues", async (req, res) => {
   }
 });
 
-
 app.patch("/issues/:id", async (req, res) => {
   try {
     const id = req.params.id;
     const updates = req.body;
 
-    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid ID" });
 
     const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
     if (!issue) return res.status(404).json({ error: "Issue not found" });
 
     if (issue.status.toLowerCase() !== "pending") {
-      return res.status(403).json({ error: "Only 'Pending' issues can be edited." });
+      return res
+        .status(403)
+        .json({ error: "Only 'Pending' issues can be edited." });
     }
 
     updates.updatedAt = new Date();
@@ -326,45 +568,59 @@ app.patch("/issues/:id", async (req, res) => {
       { $set: updates }
     );
 
-    res.status(200).json({ message: "Issue updated successfully", modifiedCount: result.modifiedCount });
+    res
+      .status(200)
+      .json({
+        message: "Issue updated successfully",
+        modifiedCount: result.modifiedCount,
+      });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-
 app.delete("/issues/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid ID" });
 
     const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
     if (!issue) return res.status(404).json({ error: "Issue not found" });
 
     if (issue.status.toLowerCase() !== "pending") {
-      return res.status(403).json({ error: "Only 'Pending' issues can be deleted." });
+      return res
+        .status(403)
+        .json({ error: "Only 'Pending' issues can be deleted." });
     }
 
     const result = await issuesCollection.deleteOne({ _id: new ObjectId(id) });
-    res.status(200).json({ message: "Issue deleted successfully", deletedCount: result.deletedCount });
+    res
+      .status(200)
+      .json({
+        message: "Issue deleted successfully",
+        deletedCount: result.deletedCount,
+      });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 app.patch("/issues/:id/upvote", async (req, res) => {
   try {
     const id = req.params.id;
     const { userId } = req.body;
 
-    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid ID" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid ID" });
 
     const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
     if (!issue) return res.status(404).json({ error: "Issue not found" });
 
-    if (issue.createdBy.userId === userId) return res.status(403).json({ error: "Cannot upvote own issue" });
-    if (issue.userUpvoted?.includes(userId)) return res.status(400).json({ error: "Already upvoted" });
+    if (issue.createdBy.userId === userId)
+      return res.status(403).json({ error: "Cannot upvote own issue" });
+    if (issue.userUpvoted?.includes(userId))
+      return res.status(400).json({ error: "Already upvoted" });
 
     await issuesCollection.updateOne(
       { _id: new ObjectId(id) },
@@ -377,48 +633,50 @@ app.patch("/issues/:id/upvote", async (req, res) => {
   }
 });
 
-
 // Get issues by user email
 app.get("/issues/user/:email", async (req, res) => {
   try {
     const { email } = req.params;
     const { page = 1, limit = 10 } = req.query;
-    
+
     if (!email) {
       return res.status(400).json({ error: "Email is required" });
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
- 
+
     const query = { "createdBy.email": email };
-    
-    const issuesCursor = issuesCollection.find(query)
+
+    const issuesCursor = issuesCollection
+      .find(query)
       .skip(skip)
       .limit(parseInt(limit))
-      .sort({ createdAt: -1 }); 
-    
+      .sort({ createdAt: -1 });
+
     const issues = await issuesCursor.toArray();
     const totalCount = await issuesCollection.countDocuments(query);
 
-    res.status(200).json({ 
-      issues, 
+    res.status(200).json({
+      issues,
       totalCount,
       currentPage: parseInt(page),
-      totalPages: Math.ceil(totalCount / parseInt(limit))
+      totalPages: Math.ceil(totalCount / parseInt(limit)),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-
-
-// Delete all issues 
+// Delete all issues
 app.delete("/issues", async (req, res) => {
   try {
     const result = await issuesCollection.deleteMany({});
-    res.status(200).json({ message: "All issues deleted!", deletedCount: result.deletedCount });
+    res
+      .status(200)
+      .json({
+        message: "All issues deleted!",
+        deletedCount: result.deletedCount,
+      });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -429,7 +687,7 @@ app.delete("/issues", async (req, res) => {
 //////////////////////////
 app.post("/create-checkout-session", async (req, res) => {
   try {
-    const { userEmail } = req.body; 
+    const { userEmail } = req.body;
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
@@ -441,13 +699,13 @@ app.post("/create-checkout-session", async (req, res) => {
               name: "Premium Membership",
               description: "Unlimited issue reporting",
             },
-            unit_amount: 1000 * 100, 
+            unit_amount: 1000 * 100,
           },
           quantity: 1,
         },
       ],
       mode: "payment",
-      success_url: `${process.env.SITE_DOMAIN}/payment-success?email=${userEmail}`, 
+      success_url: `${process.env.SITE_DOMAIN}/payment-success?email=${userEmail}`,
       cancel_url: `${process.env.SITE_DOMAIN}/dashboard/profile`,
     });
 
@@ -463,11 +721,13 @@ app.post("/issues/:id/boost-session", async (req, res) => {
     const { id } = req.params;
     const { userEmail } = req.body;
 
-    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid issue ID" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid issue ID" });
 
     const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
     if (!issue) return res.status(404).json({ error: "Issue not found" });
-    if (issue.boosted) return res.status(400).json({ error: "Issue already boosted" });
+    if (issue.boosted)
+      return res.status(400).json({ error: "Issue already boosted" });
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
@@ -479,7 +739,7 @@ app.post("/issues/:id/boost-session", async (req, res) => {
               name: "Boost Issue",
               description: `Boosting issue: ${issue.title}`,
             },
-            unit_amount: 100 * 100, 
+            unit_amount: 100 * 100,
           },
           quantity: 1,
         },
@@ -495,23 +755,27 @@ app.post("/issues/:id/boost-session", async (req, res) => {
   }
 });
 
-
 app.patch("/issues/:id/boost", async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid issue ID" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid issue ID" });
 
     const issue = await issuesCollection.findOne({ _id: new ObjectId(id) });
     if (!issue) return res.status(404).json({ error: "Issue not found" });
-    if (issue.boosted) return res.status(400).json({ error: "Issue already boosted" });
+    if (issue.boosted)
+      return res.status(400).json({ error: "Issue already boosted" });
 
     const result = await issuesCollection.updateOne(
       { _id: new ObjectId(id) },
       { $set: { boosted: true, priority: "High" } }
     );
 
-    res.json({ message: "Issue boosted successfully!", modifiedCount: result.modifiedCount });
+    res.json({
+      message: "Issue boosted successfully!",
+      modifiedCount: result.modifiedCount,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -520,26 +784,84 @@ app.patch("/issues/:id/boost", async (req, res) => {
 // Get total payments (admin dashboard)
 app.get("/payments/total", async (req, res) => {
   try {
-    // Fetch all successful payments from Stripe
-    const payments = await stripe.paymentIntents.list({ limit: 100 }); // adjust limit if needed
+    const payments = await stripe.paymentIntents.list({ limit: 100 });
 
-    const successfulPayments = payments.data.filter(p => p.status === "succeeded");
+    const successfulPayments = payments.data.filter(
+      (p) => p.status === "succeeded"
+    );
 
-    const totalAmount = successfulPayments.reduce((acc, payment) => acc + (payment.amount || 0), 0);
+    const totalAmount = successfulPayments.reduce(
+      (acc, payment) => acc + (payment.amount || 0),
+      0
+    );
 
-    // Convert from cents to BDT
     res.json({ total: totalAmount / 100, count: successfulPayments.length });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
+// Get all successful payments (for admin table)
+app.get("/payments/list", async (req, res) => {
+  try {
+    const { fromDate } = req.query;
+    let filter = {};
 
+    if (fromDate) {
+      const fromTimestamp = Math.floor(new Date(fromDate).getTime() / 1000);
+      filter = { created: { gte: fromTimestamp } };
+    }
 
+    const payments = await stripe.paymentIntents.list({
+      limit: 100,
+      ...filter,
+    });
 
+ 
+    const paymentPromises = payments.data
+      .filter((p) => p.status === "succeeded")
+      .map(async (p) => {
+       
+        let userName = "Unknown User";
+        let userEmail = p.receipt_email || "N/A";
 
+        if (p.metadata && p.metadata.userId) {
+          const user = await usersCollection.findOne({
+            _id: new ObjectId(p.metadata.userId),
+          });
+          if (user) {
+            userName = user.name;
+            userEmail = user.email;
+          }
+        }
+      
+        else if (userEmail !== "N/A") {
+          const user = await usersCollection.findOne({
+            email: userEmail,
+          });
+          if (user) {
+            userName = user.name;
+          }
+        }
 
+        return {
+          id: p.id,
+          amount: p.amount / 100,
+          currency: p.currency.toUpperCase(),
+          email: userEmail,
+          name: userName, 
+          date: new Date(p.created * 1000),
+          status: p.status,
+        };
+      });
 
+    const successfulPayments = await Promise.all(paymentPromises);
+    res.json(successfulPayments);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 //////////////////////////
 // SERVER INFO
