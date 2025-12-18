@@ -125,6 +125,57 @@ app.get("/users/:id", async (req, res) => {
   }
 });
 
+// Make a specific user admin
+app.patch("/users/make-admin", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    const result = await usersCollection.updateOne(
+      { email },
+      { $set: { role: "admin" } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ error: "User not found or already admin" });
+    }
+
+    res.json({ message: `${email} is now an admin!` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.patch("/users/block", async (req, res) => {
+  try {
+    const { email, blocked } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    const result = await usersCollection.updateOne(
+      { email },
+      { $set: { blocked: !!blocked } }
+    );
+
+    if (result.matchedCount === 0) return res.status(404).json({ error: "User not found" });
+
+    res.json({ message: `User ${blocked ? "blocked" : "unblocked"} successfully`, modifiedCount: result.modifiedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.delete("/users/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!ObjectId.isValid(id)) return res.status(400).json({ error: "Invalid user ID" });
+
+  const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+  if (result.deletedCount === 0) return res.status(404).json({ error: "User not found" });
+
+  res.json({ message: "User deleted successfully", deletedCount: result.deletedCount });
+});
+
+
+
+
 
 //////////////////////////
 // ISSUE ROUTES
@@ -428,7 +479,7 @@ app.post("/issues/:id/boost-session", async (req, res) => {
               name: "Boost Issue",
               description: `Boosting issue: ${issue.title}`,
             },
-            unit_amount: 100 * 100, // 100 Taka in paisa
+            unit_amount: 100 * 100, 
           },
           quantity: 1,
         },
@@ -462,6 +513,24 @@ app.patch("/issues/:id/boost", async (req, res) => {
 
     res.json({ message: "Issue boosted successfully!", modifiedCount: result.modifiedCount });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get total payments (admin dashboard)
+app.get("/payments/total", async (req, res) => {
+  try {
+    // Fetch all successful payments from Stripe
+    const payments = await stripe.paymentIntents.list({ limit: 100 }); // adjust limit if needed
+
+    const successfulPayments = payments.data.filter(p => p.status === "succeeded");
+
+    const totalAmount = successfulPayments.reduce((acc, payment) => acc + (payment.amount || 0), 0);
+
+    // Convert from cents to BDT
+    res.json({ total: totalAmount / 100, count: successfulPayments.length });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
