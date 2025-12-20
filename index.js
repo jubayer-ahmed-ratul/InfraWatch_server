@@ -1271,6 +1271,37 @@ app.get("/issues/assigned/staff/:staffId/all", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.patch("/staff/profile/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ error: "Invalid staff ID" });
+
+    const staff = await staffCollection.findOne({ _id: new ObjectId(id) });
+    if (!staff) return res.status(404).json({ error: "Staff not found" });
+
+  
+    const allowedUpdates = {};
+    if (updates.name) allowedUpdates.name = updates.name;
+    if (updates.phone) allowedUpdates.phone = updates.phone;
+    if (updates.photo) allowedUpdates.photo = updates.photo;
+
+    const result = await staffCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: allowedUpdates }
+    );
+
+    res.json({
+      message: "Profile updated successfully",
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 //////////////////////////
 // SERVER INFO
